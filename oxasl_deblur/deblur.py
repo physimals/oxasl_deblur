@@ -19,7 +19,6 @@ deblur methods are:
 from __future__ import print_function
 
 import sys
-import os
 from math import exp, pi, ceil, floor, sqrt
 
 import numpy as np
@@ -30,7 +29,8 @@ from scipy.optimize import curve_fit
 
 from fsl.data.image import Image
 
-from oxasl import Workspace, AslImage, image, basil, mask
+from oxasl import Workspace, AslImage, image, basil
+from oxasl.mask import generate_mask
 from oxasl.options import AslOptionParser, OptionCategory, IgnorableOptionGroup, GenericOptions
 
 from ._version import __version__, __timestamp__
@@ -65,17 +65,6 @@ def flattenmask(mask, thr):
 
     return threshold(np.sum(mask, 2), thr, binarise=True)
 
-def zdeblur_make_spec(resids, flatmask):
-    np.set_printoptions(precision=16)
-    zdata = Zvols2matrix(resids, flatmask)
-    ztemp = np.zeros(zdata.shape)
-    mean = zdata.mean(axis=1, dtype=np.float64)
-    ztemp = zdata - mean[:, np.newaxis]
-    
-    thepsd = np.absolute(fft(ztemp, axis=1))
-    thepsd = np.mean(thepsd, 0)
-    return thepsd
-
 def Zvols2matrix(data, mask):
     """
     Takes 4D volume and 2D (xy) or 3D (xyt) mask and return 2D matrix
@@ -97,6 +86,16 @@ def Zvols2matrix(data, mask):
     data = np.transpose(data, [0, 1, 3, 2])
     data2 = np.reshape(data, [mask.size, data.shape[3]])
     return data2[mask, :]
+
+def zdeblur_make_spec(resids, flatmask):
+    zdata = Zvols2matrix(resids, flatmask)
+    ztemp = np.zeros(zdata.shape)
+    mean = zdata.mean(axis=1, dtype=np.float64)
+    ztemp = zdata - mean[:, np.newaxis]
+    
+    thepsd = np.absolute(fft(ztemp, axis=1))
+    thepsd = np.mean(thepsd, 0)
+    return thepsd
 
 def lorentzian(x, gamma):
     return 1/pi * (0.5*gamma)/(np.square(x)+(0.5*gamma)**2)
@@ -124,11 +123,11 @@ def gaussian_autocorr(length, sig):
     """
     Returns the autocorrelation function for Gaussian smoothed white
     noise with length data points, where the Gaussian std dev is sigma 
+    
+    For now we go via the gaussian fourier transform
+    (autocorr is ifft of the power spectral density)
+    ideally , we should just analytically calc the autocorr
     """
-
-    # For now we go via the gaussian fourier transform
-    # (autocorr is ifft of the power spectral density)
-    # ideally , we should just analytically calc the autocorr
     gfft = gaussian_fft(sig, length)
     x = np.real(ifft(np.square(gfft))) 
 
@@ -234,7 +233,6 @@ def create_deblur_kern(thefft, kernel, kernlen, sig=1):
     return kern
    
 def zdeblur_with_kern(volume, kern, deblur_method="fft"):
-
     if deblur_method == "fft":
 
         # FIXME MATLAB code below transposes and takes complex conjugate 
@@ -267,49 +265,49 @@ def zdeblur_with_kern(volume, kern, deblur_method="fft"):
     else:
         raise RuntimeError("Unknown deblur method: %s" % deblur_method)
 
-def filter_matrix(data, kernel):
-    # This is the wrapper for the Lucy-Richardson deconvolution
-    #
-    # Filter matrix creates the different matrices before applying the
-    # deblurring algorithm
-    # Input --> original deltaM maps kernel
-    # Output --> deblurred deltaM maps
-    #
-    # (c) Michael A. Chappell & Illaria Boscolo Galazzo, University of Oxford, 2012-2014
+# FIXME this code is not complete because we get numerical problems and it is not
+# clear if the method is correctly implemented.
+# def filter_matrix(data, kernel):
+#     # This is the wrapper for the Lucy-Richardson deconvolution
+#     #
+#     # Filter matrix creates the different matrices before applying the
+#     # deblurring algorithm
+#     # Input --> original deltaM maps kernel
+#     # Output --> deblurred deltaM maps
+#     #
+#     # (c) Michael A. Chappell & Illaria Boscolo Galazzo, University of Oxford, 2012-2014
 
-    # MAC 4/4/14 removed the creation of the lorentz kernel and allow to accept
-    # any kernel
-    #
-    # FIXME this code is not complete because we get numerical problems and it is not
-    # clear if the method is correctly implemented.
-    nr, nc, ns, nt = data.shape
-    # Matrix K 
-    kernel_max = kernel/np.sum(kernel)
-    matrix_kernel = np.zeros((len(kernel), ns))
-    matrix_kernel[:, 0] = kernel_max
-    for i in range(1, ns):
-        matrix_kernel[:, i] = np.concatenate([np.zeros(i), kernel_max[:ns-i]])
+#     # MAC 4/4/14 removed the creation of the lorentz kernel and allow to accept
+#     # any kernel
+#     #
+#     nr, nc, ns, nt = data.shape
+#     # Matrix K 
+#     kernel_max = kernel/np.sum(kernel)
+#     matrix_kernel = np.zeros((len(kernel), ns))
+#     matrix_kernel[:, 0] = kernel_max
+#     for i in range(1, ns):
+#         matrix_kernel[:, i] = np.concatenate([np.zeros(i), kernel_max[:ns-i]])
     
-    # Invert with SVD
-    #U, S, V = svd(matrix_kernel)
-    #W = np.diag(np.reciprocal(np.diag(S)))
-    #W[S < (0.2*S[0])] = 0
-    #inverse_matrix = V*W*U.'
-    inverse_matrix = np.linalg.inv(matrix_kernel)
+#     # Invert with SVD
+#     #U, S, V = svd(matrix_kernel)
+#     #W = np.diag(np.reciprocal(np.diag(S)))
+#     #W[S < (0.2*S[0])] = 0
+#     #inverse_matrix = V*W*U.'
+#     inverse_matrix = np.linalg.inv(matrix_kernel)
     
-    # Deblurring Algorithm
-    index = 1
-    for i in range(1, nr+1):
-        for j in range(1, nc+1):
-            for k in range(1, nt+1):
-                index = index+1
-                #waitbar(index/(nt*nc*nc),h)
-                data_vettore = data[i, j, :, k]
-                initial_estimate = np.dot(inverse_matrix, data_vettore)
-    #deblur = deconvlucy_asl(data_vettore,kernel,8,initial_estimate)
-    #deblur_image[i,j,:,k] = deblur
-    deblur_image = None
-    return deblur_image 
+#     # Deblurring Algorithm
+#     index = 1
+#     for i in range(1, nr+1):
+#         for j in range(1, nc+1):
+#             for k in range(1, nt+1):
+#                 index = index+1
+#                 #waitbar(index/(nt*nc*nc),h)
+#                 data_vettore = data[i, j, :, k]
+#                 initial_estimate = np.dot(inverse_matrix, data_vettore)
+#     #deblur = deconvlucy_asl(data_vettore,kernel,8,initial_estimate)
+#     #deblur_image[i,j,:,k] = deblur
+#     deblur_image = None
+#     return deblur_image 
 
 def deblur_basil(wsp):
     """
@@ -342,7 +340,7 @@ def deblur(wsp, deblur_img):
     """
     if wsp.residuals is None:
         deblur_basil(wsp)
-    mask.generate_mask(wsp)
+    generate_mask(wsp)
 
     wsp.log.write('\nDeblurring image %s\n' % deblur_img.name)
     wsp.log.write(' - kernel: %s\n' % wsp.deblur_kernel)
