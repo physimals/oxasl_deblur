@@ -1,4 +1,9 @@
-from .deblur import deblur
-from ._version import __version__
+"""
+OXASL DEBLUR
 
-__all__ = ["__version__"]
+Copyright (c) University of Oxford 2018
+"""
+from .deblur import deblur
+from ._version import __version__, __timestamp__
+
+__all__ = ["__version__", "__timestamp__", "deblur"]
