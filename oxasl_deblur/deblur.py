@@ -16,59 +16,67 @@ deblur methods are:
 
 (c) Michael A. Chappell, University of Oxford, 2009-2018
 """
-import os, sys
+from __future__ import print_function
+
+import sys
+import os
 from math import exp, pi, ceil, floor, sqrt
-import glob
-import tempfile
-from optparse import OptionParser, OptionGroup
 
 import numpy as np
-import nibabel as nib
+
 from scipy.fftpack import fft, ifft
 from scipy.signal import tukey
 from scipy.optimize import curve_fit
-from scipy.linalg import svd
 
-import asl.fslhelpers as fsl
+from fsl.data.image import Image
 
-def thresh(arr, thresh, useabs=False, binarise=False):
+from oxasl import Workspace, AslImage, image, basil, mask
+from oxasl.options import AslOptionParser, OptionCategory, IgnorableOptionGroup, GenericOptions
+
+from ._version import __version__, __timestamp__
+
+def threshold(arr, thresh, useabs=False, binarise=False):
     """
-    If useabs=False, set all x<thresh = 0
-    If useabse=True, set all |x|<thresh = 0
-    If binarise=True, also set all other values to 1 
+    Threshold an array
+
+    :param arr: Array to threshold
+    :param thresh: Threshold value - all values below this are zeroed
+    :param useabs: If True, threshold based on absolute value
+    :param binarise: If True, set all non-zeroed values to 1
     """
     if useabs:
-        arr = p.absolute(arr)
+        arr = np.absolute(arr)
        
     arr[arr < thresh] = 0
     if binarise: arr[arr >= thresh] = 1
     return arr
 
 def flattenmask(mask, thr):
+    """
+    Create a 2D array whose values are 1 if there are at least
+    ``thr`` unmasked voxels in the z direction, 0 otherwise.
+    """
     if thr > mask.shape[2]:
         raise RuntimeError("Cannot flatten mask with a threshold larger than the z dimension")
 
     # Set all unmasked voxels to 1
-    # FIXME need to copy mask?
+    mask = np.copy(mask)
     mask[mask > 0] = 1
 
-    # Create a 2D array whose values are 1 if there are at least
-    # 'thr' unmasked voxels in the z direction, 0 otherwise.
-    return thresh(np.sum(mask, 2), thr, binarise=True)
+    return threshold(np.sum(mask, 2), thr, binarise=True)
 
 def zdeblur_make_spec(resids, flatmask):
     np.set_printoptions(precision=16)
-    zdata = Zvols2matrix(resids,flatmask)
+    zdata = Zvols2matrix(resids, flatmask)
     ztemp = np.zeros(zdata.shape)
     mean = zdata.mean(axis=1, dtype=np.float64)
-    ztemp = zdata - mean[:,np.newaxis]
+    ztemp = zdata - mean[:, np.newaxis]
     
-    f1 = fft(ztemp,axis=1)
-    thepsd = np.absolute(fft(ztemp,axis=1))
+    thepsd = np.absolute(fft(ztemp, axis=1))
     thepsd = np.mean(thepsd, 0)
     return thepsd
 
-def Zvols2matrix(data,mask):
+def Zvols2matrix(data, mask):
     """
     Takes 4D volume and 2D (xy) or 3D (xyt) mask and return 2D matrix
     (space-time x z-dimension)
@@ -83,63 +91,64 @@ def Zvols2matrix(data,mask):
         mask = np.repeat(mask, data.shape[3], 2)
     
     # Flatten with extra z dimension
-    mask = np.reshape(mask,[mask.size]) > 0
+    mask = np.reshape(mask, [mask.size]) > 0
     
     # need to swap axes so 2nd dim of 2D array is Z not T
-    data = np.transpose(data, [0,1,3,2])
-    data2 = np.reshape(data,[mask.size, data.shape[3]])
-    return data2[mask,:]
+    data = np.transpose(data, [0, 1, 3, 2])
+    data2 = np.reshape(data, [mask.size, data.shape[3]])
+    return data2[mask, :]
 
 def lorentzian(x, gamma):
-    return (1/pi * (0.5*gamma)/(np.square(x)+(0.5*gamma)**2))
+    return 1/pi * (0.5*gamma)/(np.square(x)+(0.5*gamma)**2)
 
-def lorentzian_kern(gamma,len,demean=True):
-    half = (float(len)-1)/2
+def lorentzian_kern(gamma, length, demean=True):
+    half = (float(length)-1)/2
     x = range(0, int(ceil(half))+1) + range(int(floor(half)), 0, -1)
-    out = lorentzian(x,gamma)
+    out = lorentzian(x, gamma)
     if demean: out = out - np.mean(out) #zero mean/DC
     return out
 
-def lorentzian_autocorr(len, gamma):
-    return np.real(ifft(np.square(np.absolute(fft(lorentzian_kern(gamma,len,1))))))
+def lorentzian_autocorr(length, gamma):
+    return np.real(ifft(np.square(np.absolute(fft(lorentzian_kern(gamma, length, 1))))))
 
-def lorentzian_wiener(len, gamma, tunef):
-    thefft = np.absolute(fft(lorentzian_kern(gamma,len,True)))
+def lorentzian_wiener(length, gamma, tunef):
+    thefft = np.absolute(fft(lorentzian_kern(gamma, length, True)))
     thepsd = np.square(thefft)
     tune = tunef*np.mean(thepsd)
     wien = np.divide(thepsd, thepsd+tune)
-    wien[0]=1 # we are about to dealing with a demeaned kernel
+    wien[0] = 1 # we are about to dealing with a demeaned kernel
     out = np.real(ifft(np.divide(thepsd, np.square(wien))))
     return out/max(out)
 
-def gaussian_autocorr(len, sig):
+def gaussian_autocorr(length, sig):
     """
     Returns the autocorrelation function for Gaussian smoothed white
-    noise with len data points, where the Gaussian std dev is sigma 
+    noise with length data points, where the Gaussian std dev is sigma 
     """
 
     # For now we go via the gaussian fourier transform
     # (autocorr is ifft of the power spectral density)
     # ideally , we should just analytically calc the autocorr
-    gfft=gaussian_fft(sig,len)
+    gfft = gaussian_fft(sig, length)
     x = np.real(ifft(np.square(gfft))) 
 
-    if max(x)>0: x = x/max(x)
+    if max(x) > 0:
+        x = x/max(x)
     return x
 
-def gaussian_fft(sig,len,demean=True):
+def gaussian_fft(sig, length, demean=True):
     """
     Returns the fourier transform function for Gaussian smoothed white
     noise with len data points, where the Gaussian std dev is sigma 
     """
-    tres=1.0
-    fres=1.0/(tres*len)
-    maxk=1/tres
-    krange=np.linspace(fres, maxk, len)
+    tres = 1.0
+    fres = 1.0/(tres*length)
+    maxk = 1/tres
+    krange = np.linspace(fres, maxk, length)
     
-    x=[sig*exp(-(0.5*sig**2*(2*pi*k)**2))+sqrt(2*pi)*sig*exp(-(0.5*sig**2*(2*pi*((maxk+fres)-k))**2))
-        for k in krange]
-    if demean: x[0]=0
+    x = [sig*exp(-(0.5*sig**2*(2*pi*k)**2))+sqrt(2*pi)*sig*exp(-(0.5*sig**2*(2*pi*((maxk+fres)-k))**2))
+         for k in krange]
+    if demean: x[0] = 0
     return x
 
 def fit_gaussian_autocorr(thefft):
@@ -152,10 +161,10 @@ def fit_gaussian_autocorr(thefft):
     data_raw_autocorr = np.real(ifft(np.square(np.absolute(thefft))))
     data_raw_autocorr = data_raw_autocorr/max(data_raw_autocorr)
 
-    popt, pcov = curve_fit(gaussian_autocorr,len(data_raw_autocorr),data_raw_autocorr,1)
+    popt, _ = curve_fit(gaussian_autocorr, len(data_raw_autocorr), data_raw_autocorr, 1)
     return popt[0]
 
-def create_deblur_kern(thefft,kernel,kernlen,sig=1):
+def create_deblur_kern(thefft, kernel, kernlen, sig=1):
     np.set_printoptions(precision=16)
     if kernel == "direct":
         slope = thefft[1]-thefft[2]
@@ -170,30 +179,30 @@ def create_deblur_kern(thefft,kernel,kernlen,sig=1):
     elif kernel == "lorentz":
         ac = np.real(ifft(np.square(thefft))) # autocorrelation
         ac = ac/max(ac)
-        popt, pcov = curve_fit(lorentzian_autocorr, len(ac), ac, 2)
+        popt, _ = curve_fit(lorentzian_autocorr, len(ac), ac, 2)
         gamma = popt[0]
         lozac = lorentzian_autocorr(kernlen, gamma)
         lozac = lozac/max(lozac)
-        thefft = np.absolute(fft(lorentzian_kern(gamma,kernlen,True))) # when getting final spec. den. include mean        
+        thefft = np.absolute(fft(lorentzian_kern(gamma, kernlen, True))) # when getting final spec. den. include mean        
     elif kernel == "lorwien":
         ac = np.real(ifft(np.square(thefft))) # autocorrelation
         ac = ac/max(ac)
-        popt, pcov = curve_fit(lorentzian_wiener, len(ac), ac, (2, 0.01))
+        popt, _ = curve_fit(lorentzian_wiener, len(ac), ac, (2, 0.01))
         gamma, tunef = popt
         lozac = lorentzian_wiener(kernlen, gamma, tunef)
-        thefft = np.absolute(fft(lorentzian_kern(gamma,kernlen,True))) # when getting final spec. den. include mean
+        thefft = np.absolute(fft(lorentzian_kern(gamma, kernlen, True))) # when getting final spec. den. include mean
         thepsd = np.square(thefft)
         tune = tunef*np.mean(thepsd)
         wien = np.divide(thepsd, thepsd+tune)
-        wien[0]=1
+        wien[0] = 1
         thefft = np.divide(thefft, wien)
     elif kernel == "gauss":
         sigfit = fit_gaussian_autocorr(thefft)
-        thefft = gaussian_fft(sigfit,kernlen,True) # When getting final spec. den. include mean
+        thefft = gaussian_fft(sigfit, kernlen, True) # When getting final spec. den. include mean
     elif kernel == "manual":
         if len(sig) != kernlen:
             raise RuntimeError("Manual deblur kernel requires signal of length %i" % kernlen)
-        thefft = gaussian_fft(sig,kernlen,True)
+        thefft = gaussian_fft(sig, kernlen, True)
     else:
         raise RuntimeError("Unknown kernel: %s" % kernel)
 
@@ -232,7 +241,7 @@ def zdeblur_with_kern(volume, kern, deblur_method="fft"):
         # We don't need to transpose, so just take conjugate. However not 
         # completely clear if complex conjugate is required or if this is
         # an unintentional side-effect of the transpose
-        fftkern=np.conj(fft(kern))
+        fftkern = np.conj(fft(kern))
         #if size(fftkern,2)==1
         #    fftkern = fftkern'
         #end
@@ -246,15 +255,15 @@ def zdeblur_with_kern(volume, kern, deblur_method="fft"):
         fftkern = np.expand_dims(fftkern, 0)
         fftkern = np.expand_dims(fftkern, -1)
         fftkern2 = np.zeros(volume.shape, dtype=complex)
-        fftkern2[:,:,:,:] = fftkern
-        fftvol = fft(volume,axis=2)
-        v1 = np.multiply(fftkern2, fftvol)
+        fftkern2[:, :, :, :] = fftkern
+        fftvol = fft(volume, axis=2)
         volout = np.real(ifft(np.multiply(fftkern2, fftvol), axis=2))
         volout += zmean
         return volout
 
     elif deblur_method == "lucy":
-        volout = filter_matrix(volume, kern)
+        #volout = filter_matrix(volume, kern)
+        raise RuntimeError("Lucy-Richardson deconvolution not supported in this version of ASL_DEBLUR")
     else:
         raise RuntimeError("Unknown deblur method: %s" % deblur_method)
 
@@ -273,177 +282,152 @@ def filter_matrix(data, kernel):
     #
     # FIXME this code is not complete because we get numerical problems and it is not
     # clear if the method is correctly implemented.
-    raise RuntimeError("Lucy-Richardson deconvolution not supported in this version of ASL_DEBLUR")
-
-    nr,nc,ns,nt = data.shape
+    nr, nc, ns, nt = data.shape
     # Matrix K 
     kernel_max = kernel/np.sum(kernel)
     matrix_kernel = np.zeros((len(kernel), ns))
-    matrix_kernel[:,0] = kernel_max
+    matrix_kernel[:, 0] = kernel_max
     for i in range(1, ns):
-        matrix_kernel[:,i] = np.concatenate([np.zeros(i), kernel_max[:ns-i]])
+        matrix_kernel[:, i] = np.concatenate([np.zeros(i), kernel_max[:ns-i]])
     
     # Invert with SVD
-    U,S,V = svd(matrix_kernel)
+    #U, S, V = svd(matrix_kernel)
     #W = np.diag(np.reciprocal(np.diag(S)))
     #W[S < (0.2*S[0])] = 0
     #inverse_matrix = V*W*U.'
     inverse_matrix = np.linalg.inv(matrix_kernel)
     
     # Deblurring Algorithm
-    #h = waitbar(0,'Deblurring Algorithm')
     index = 1
     for i in range(1, nr+1):
         for j in range(1, nc+1):
-            for k in range (1, nt+1):
+            for k in range(1, nt+1):
                 index = index+1
                 #waitbar(index/(nt*nc*nc),h)
-                data_vettore = data[i,j,:,k]
+                data_vettore = data[i, j, :, k]
                 initial_estimate = np.dot(inverse_matrix, data_vettore)
-    #            deblur = deconvlucy_asl(data_vettore,kernel,8,initial_estimate)
-    #            deblur_image[i,j,:,k] = deblur
-    #return deblur_image 
+    #deblur = deconvlucy_asl(data_vettore,kernel,8,initial_estimate)
+    #deblur_image[i,j,:,k] = deblur
+    deblur_image = None
+    return deblur_image 
 
-def deblur(data_name,residual_name,mask_name,out_name,kernel="direct",sig=1,deblur_method="fft"):
+def deblur_basil(wsp):
+    """
+    Run BASIL on ASL data to get residuals prior to deblurring
+    """
+    basil_output = wsp.sub("basil_output")
+    wsp.basil_options = {"save-residuals" : True}
+    basil.basil(wsp, output_wsp=basil_output)
+    wsp.residuals = basil_output.main.finalstep.residuals
 
-    print('deblur')
-    print('Deblurring kernel: %s' % kernel)
-    print('Deblurring method: %s' % deblur_method)
+def deblur(wsp, deblur_img):
+    """
+    Do deblurring on ASL data
 
-    # load the data
-    print('Input data is: %s' % data_name)
-
-    data_nii = nib.load(data_name)
-    data = data_nii.get_data().astype(np.float64)
-    resid_nii = nib.load(residual_name)
-    resid = resid_nii.get_data().astype(np.float64)
-    mask_nii = nib.load(mask_name)
-    mask = mask_nii.get_data()
+    :param deblur_img: Image to deblur. If AslImage is provided, an AslImage is returned
+    :return: Image or AslImage
     
-    #pad the data - 2 slices top and bottom
-    data = np.pad(data, [(0, 0), (0, 0), (2, 2), (0, 0)], 'edge')
+    Required workspace attributes
+    -----------------------------
 
-    maskser = np.sum(mask, (0, 1))
-    nslices = np.sum(maskser>0) # number of slices that are non zero in mask
+     - ``deblur_method`` : Deblurring method name
+     - ``deblur_kernel`` : Deblurring kernel name
 
-    flatmask = flattenmask(mask,nslices-2)
+    Optional workspace attributes
+    -----------------------------
+
+     - ``mask`` : Data mask. If not provided, will be auto generated
+     - ``residuals`` : Residuals from model fit on ASL data. If not specified and ``wsp.asldata``
+                       is provided, will run BASIL fitting on this data to generate residuals
+    """
+    if wsp.residuals is None:
+        deblur_basil(wsp)
+    mask.generate_mask(wsp)
+
+    wsp.log.write('\nDeblurring image %s\n' % deblur_img.name)
+    wsp.log.write(' - kernel: %s\n' % wsp.deblur_kernel)
+    wsp.log.write(' - method: %s\n' % wsp.deblur_method)
+    
+    # Pad the data - 2 slices top and bottom
+    data_pad = np.pad(deblur_img.data, [(0, 0), (0, 0), (2, 2), (0, 0)], 'edge')
+ 
+    # Number of slices that are non zero in mask
+    maskser = np.sum(wsp.mask.data, (0, 1))
+    nslices = np.sum(maskser > 0)
+    flatmask = flattenmask(wsp.mask.data, nslices-2)
+
     # Commented out in MATLAB code
     # residser = zdeblur_make_series(resids,flatmask)
-    thespecd = zdeblur_make_spec(resid,flatmask)
-    #NB data has more slices than residuals
-    kern = create_deblur_kern(thespecd,kernel,data.shape[2],sig)
+    thespecd = zdeblur_make_spec(wsp.residuals.data, flatmask)
 
-    # deblur
-    dataout = zdeblur_with_kern(data,kern,deblur_method)
+    # NB data has more slices than residuals
+    sig = wsp.ifnone("sig", 1)
+    kern = create_deblur_kern(thespecd, wsp.deblur_kernel, data_pad.shape[2], sig)
+
+    # Do deblurring
+    dataout = zdeblur_with_kern(data_pad, kern, wsp.deblur_method)
     
-    # discard padding
-    dataout = dataout[:,:,2:-2,:]
+    # Discard padding and return
+    dataout = dataout[:, :, 2:-2, :]
+    if isinstance(deblur_img, AslImage):
+        ret = deblur_img.derived(dataout)
+    else:
+        ret = Image(dataout, header=deblur_img.header)
 
-    # save
-    dataout_nii = nib.Nifti1Image(dataout, data_nii.get_header().get_best_affine(), data_nii.get_header())
-    dataout_nii.to_filename(out_name)
-    print('deblur complete')
+    wsp.log.write('DONE\n')
+    return ret
+
+class DeblurOptions(OptionCategory):
+    """
+    DEBLUR option category
+    """
+    def __init__(self, **kwargs):
+        OptionCategory.__init__(self, "enable", **kwargs)
+
+    def groups(self, parser):
+        group = IgnorableOptionGroup(parser, "DEBLUR options", ignore=self.ignore)
+        group.add_option("--kernel", dest="deblur_kernel", help="Deblurring kernel", default="direct")
+        group.add_option("--method", dest="deblur_method", help="Deblurring method", default="fft")
+        group.add_option("--residuals", dest="residuals", type="image", help="Image containging the residials from a model fit. If not specified, BASIL options must be given to perform model fit")
+        return [group]
 
 def main():
-    usage = """ASL_DEBLUR
-    Correct T2 (z) blurring of GRASE-ASL
-
-    asl_deblur -i <input> -m <mask> [options]"""
-
-    p = OptionParser(usage=usage, version="@GIT_SHA1@ (@GIT_DATE@)")
-    p.add_option("-i", dest="input", help="ASL data file")
-    p.add_option("-o", dest="output", help="Output file name", default="asldata_deblur")
-    p.add_option("-m", dest="mask", help="Mask (in native space of ASL data)")
-    p.add_option("--kernel", dest="kernel", help="Deblurring kernel", default="direct")
-    p.add_option("--method", dest="method", help="Deblurring method", default="fft")
-    p.add_option("-c", dest="calib", help="Calibration image to deblur, if required")
-    p.add_option("--calibout", dest="calibout", help="Output filename for deblurred calibration image")
-    p.add_option("--debug", action="store_true", dest="debug", help="Enable debug mode", default=False)
-
-    g = OptionGroup(p, "Supply existing residuals")
-    g.add_option("--residuals", dest="residuals", help="Image containging the resdiuals from a model fit")
-    p.add_option_group(g)
-
-    g = OptionGroup(p, "Calculate residuals from model fit (using BASIL)")
-    g.add_option("--tis", dest="tis", help="comma separated list of inversion times, e.g. --tis 0.2,0.4,0.6")
-    g.add_option("--casl", action="store_true", dest="casl", default=False, help="Labelling was cASL rather than pASL")
-    g.add_option("--bolus", type="float", dest="tau", help="Bolus duration", default=1)
-    g.add_option("--t1", type="float", dest="t1", help="Tissue T1 value", default=1.3)
-    g.add_option("--t1b", type="float", dest="t1b", help="Blood T1 value", default=1.6)
-    g.add_option("--inferart", action="store_true", dest="inferart", default=False, help="Infer arterial signal - e.g. arterial suppression has not been applied")
-    g.add_option("--infertau", action="store_true", dest="infertau", default=False, help="Infer bolus duration (otherwise it is fixed, e.g. by QUIPSSII or CASL)")
-    p.add_option_group(g)
-
-    options, args = p.parse_args()
-
-    if options.debug:
-        tempdir = os.path.join(os.getcwd(), "tmp_asl_deblur_py")
-        fsl.mkdir(tempdir)
-    else:
-        tempdir = tempfile.mkdtemp("_asl_deblur")
-    print("Using temporary dir: %s" % tempdir)
-
-    infile = fsl.Image(options.input, "input")
-    mask = fsl.Image(options.mask, "mask")
-
-    if options.residuals is None:
-        # Process using BASIL to get the residuals
-        # Write options file for BASIL
-        if options.tis is None:
-            raise RuntimeError("No residuals specified, and no TIs to run BASIL either")
-        tis = options.tis.split(",")
-        tilist_args=""
-        for idx, ti in enumerate(tis):
-            tilist_args += "--ti%i=%s " % (idx+1, ti)
-
-        tpoints = infile.shape[3]
-        ntis = len(tis)
-        if tpoints % ntis != 0:
-            raise RuntimeError("%i TIs given, but input data has %i timepoints - not a multiple" % (ntis, tpoints))
-        repeats = tpoints / ntis
+    """
+    Entry point for OXASL_DEBLUR command line application
+    """
+    try:
+        parser = AslOptionParser(usage="oxasl_deblur -i <ASL input file> [options...]", version=__version__)
+        parser.add_category(image.AslImageOptions())
+        parser.add_category(DeblurOptions())
+        parser.add_category(basil.BasilOptions())
+        parser.add_category(GenericOptions())
         
-        print("Number of inversion times: %i" % ntis)
-        print("Number of timepoints in data: %i" % tpoints)
-        print("Number of repeats in data: %i" % repeats)
+        options, _ = parser.parse_args(sys.argv)
+        if not options.output:
+            options.output = "deblur_output"
 
-        f = open(os.path.join(tempdir, "basil_options.txt"), "w")
-        f.write("--t1=%.3f\n" % options.t1)
-        f.write("--t1b=%.3f\n" % options.t1b)
-        f.write("--tau=%.3f\n" % options.tau)
-        f.write("--repeats=%i\n" % repeats)
-        if options.casl: f.write("--casl\n")
-        if options.inferart: f.write("--inferart\n")
-        if options.infertau: f.write("--infertau\n")
-        f.write("%s\n" % tilist_args)
-        f.write("--save-residuals\n")
-        f.close()
+        if not options.asldata:
+            sys.stderr.write("Input ASL data not specified\n")
+            parser.print_help()
+            sys.exit(1)
+                
+        print("OXASL_DEBLUR %s (%s)\n" % (__version__, __timestamp__))
+        asldata = AslImage(options.asldata, **parser.filter(options, "image"))
+        wsp = Workspace(savedir=options.output, **vars(options))
+        wsp.report.title = "DEBLUR processing report"
+        wsp.asldata = asldata
 
-        print("Calling BASIL")
-        fsl.Prog("basil").run("-i %s -o %s/basil -m %s -@ %s/basil_options.txt" % (options.input, tempdir, options.mask, tempdir))
+        asldata.summary()
+        wsp.asldata_deblur = deblur(wsp, wsp.asldata)
+        if wsp.calib is not None:
+            wsp.calib_deblur = deblur(wsp, wsp.calib)
 
-        # Work out which is the final step from BASIL
-        steps = glob.glob(os.path.join(tempdir, "basil/step*"))
-        final_step = max([int(fname[-1]) for fname in steps if "latest" not in fname])
+        #wsp.report.generate_html(os.path.join(wsp.output, "report"), "report_build")
+        print('\nOXASL_DEBLUR - DONE - output is %s' % options.output)
 
-        fsl.imcp("%s/basil/step%i/residuals" % (tempdir, final_step), "%s/residuals" % tempdir)
-        fsl.imcp("%s/residuals" % tempdir, "%s/%s_residuals" % (tempdir, options.output))
-    else:
-        fsl.imcp(options.residuals, "%s/residuals" % tempdir)
-
-    resid = fsl.Image("%s/residuals" % tempdir, "residuals")
-    deblur(options, tempdir, infile.full, mask.full, resid.full, "deblurdata", options.output)
-
-    # Also deblur the calibration image (if supplied)
-    if options.calib:
-        if options.calibout is None: options.calibout = "%s_deblur" % options.calib
-        deblur(options, tempdir, options.calib, mask.full, resid.full, "calibdeblurdata", options.calibout)
-
-    if not options.debug:
-        pass
-        #rm -r $tempdir
-
-    print("Output is %s" % options.output)
-    print("ASL_DEBLUR - done.")
-
+    except RuntimeError as e:
+        print("ERROR: " + str(e) + "\n")
+        sys.exit(1)
+    
 if __name__ == "__main__":
     main()
