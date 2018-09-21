@@ -54,7 +54,7 @@ setup(
     install_requires=requirements,
     entry_points={
         'console_scripts' : [
-            "oxasl_deblur`=oxasl_deblur.deblur:main", 
+            "oxasl_deblur=oxasl_deblur.deblur:main", 
         ],
     },
     classifiers=[],
