@@ -384,9 +384,18 @@ class DeblurOptions(OptionCategory):
 
     def groups(self, parser):
         group = IgnorableOptionGroup(parser, "DEBLUR options", ignore=self.ignore)
-        group.add_option("--kernel", dest="deblur_kernel", help="Deblurring kernel", default="direct")
-        group.add_option("--method", dest="deblur_method", help="Deblurring method", default="fft")
-        group.add_option("--residuals", dest="residuals", type="image", help="Image containging the residials from a model fit. If not specified, BASIL options must be given to perform model fit")
+        group.add_option("--kernel", dest="deblur_kernel", 
+                         help="Deblurring kernel: Choices are 'direct' (estimate kernel directly from data), "
+                              "'gauss' - Gaussian kernel but estimate size from data, "
+                              "'manual' - Gaussian kernel with size given by sigma"
+                              "'lorentz' - Lorentzian kernel, estimate size from data"
+                              "'lorwein' - Lorentzian kernel with weiner type filter", 
+                         choices=["direct", "gauss", "manual", "lorentz", "lorwein"], default="direct")
+        group.add_option("--method", dest="deblur_method", 
+                         help="Deblurring method: Choicess are 'fft' for division in FFT domain or 'lucy' for Lucy-Richardson (ML solution) for Gaussian noise", 
+                         choices=["fft", "lucy"], default="fft")
+        group.add_option("--residuals", dest="residuals", type="image", 
+                         help="Image containging the residials from a model fit. If not specified, BASIL options must be given to perform model fit")
         return [group]
 
 def main():
@@ -400,7 +409,7 @@ def main():
         parser.add_category(basil.BasilOptions())
         parser.add_category(GenericOptions())
         
-        options, _ = parser.parse_args(sys.argv)
+        options, _ = parser.parse_args()
         if not options.output:
             options.output = "deblur_output"
 
