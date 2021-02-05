@@ -338,9 +338,9 @@ def deblur(wsp, deblur_img):
      - ``residuals`` : Residuals from model fit on ASL data. If not specified and ``wsp.asldata``
                        is provided, will run BASIL fitting on this data to generate residuals
     """
+    generate_mask(wsp)
     if wsp.residuals is None:
         deblur_basil(wsp)
-    generate_mask(wsp)
 
     wsp.log.write('\nDeblurring image %s\n' % deblur_img.name)
     wsp.log.write(' - kernel: %s\n' % wsp.deblur_kernel)
