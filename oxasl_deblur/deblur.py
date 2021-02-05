@@ -316,7 +316,7 @@ def deblur_basil(wsp):
     basil_output = wsp.sub("basil_output")
     wsp.basil_options = {"save-residuals" : True}
     basil.basil(wsp, output_wsp=basil_output)
-    wsp.residuals = basil_output.main.finalstep.residuals
+    wsp.residuals = basil_output.finalstep.residuals
 
 def deblur(wsp, deblur_img):
     """
@@ -380,7 +380,7 @@ class DeblurOptions(OptionCategory):
     DEBLUR option category
     """
     def __init__(self, **kwargs):
-        OptionCategory.__init__(self, "enable", **kwargs)
+        OptionCategory.__init__(self, "deblur", **kwargs)
 
     def groups(self, parser):
         group = IgnorableOptionGroup(parser, "DEBLUR options", ignore=self.ignore)
@@ -407,7 +407,7 @@ def main():
         parser.add_category(image.AslImageOptions())
         parser.add_category(DeblurOptions())
         parser.add_category(basil.BasilOptions())
-        parser.add_category(GenericOptions())
+        parser.add_category(GenericOptions(output_type="file"))
         
         options, _ = parser.parse_args()
         if not options.output:
@@ -420,8 +420,11 @@ def main():
                 
         print("OXASL_DEBLUR %s (%s)\n" % (__version__, __timestamp__))
         asldata = AslImage(options.asldata, **parser.filter(options, "image"))
-        wsp = Workspace(savedir=options.output, **vars(options))
-        wsp.report.title = "DEBLUR processing report"
+
+        if options.debug:
+            wsp = Workspace(savedir=options.output + "_debug", **vars(options))
+        else:
+            wsp = Workspace(**vars(options))
         wsp.asldata = asldata
 
         asldata.summary()
@@ -429,7 +432,7 @@ def main():
         if wsp.calib is not None:
             wsp.calib_deblur = deblur(wsp, wsp.calib)
 
-        #wsp.report.generate_html(os.path.join(wsp.output, "report"), "report_build")
+        wsp.asldata_deblur.save(options.output)
         print('\nOXASL_DEBLUR - DONE - output is %s' % options.output)
 
     except RuntimeError as e:
