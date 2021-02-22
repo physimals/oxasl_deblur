@@ -346,8 +346,13 @@ def deblur(wsp, deblur_img):
     wsp.log.write(' - kernel: %s\n' % wsp.deblur_kernel)
     wsp.log.write(' - method: %s\n' % wsp.deblur_method)
     
+    deblur_data = deblur_img.data
+    # Ensure image is 4D
+    if deblur_data.ndim == 3:
+        deblur_data = deblur_data[..., np.newaxis]
+
     # Pad the data - 2 slices top and bottom
-    data_pad = np.pad(deblur_img.data, [(0, 0), (0, 0), (2, 2), (0, 0)], 'edge')
+    data_pad = np.pad(deblur_data, [(0, 0), (0, 0), (2, 2), (0, 0)], 'edge')
  
     # Number of slices that are non zero in mask
     maskser = np.sum(wsp.mask.data, (0, 1))
@@ -370,7 +375,7 @@ def deblur(wsp, deblur_img):
     if isinstance(deblur_img, AslImage):
         ret = deblur_img.derived(dataout)
     else:
-        ret = Image(dataout, header=deblur_img.header)
+        ret = Image(np.squeeze(dataout, axis=3), header=deblur_img.header)
 
     wsp.log.write('DONE\n')
     return ret
@@ -395,7 +400,8 @@ class DeblurOptions(OptionCategory):
                          help="Deblurring method: Choicess are 'fft' for division in FFT domain or 'lucy' for Lucy-Richardson (ML solution) for Gaussian noise", 
                          choices=["fft", "lucy"], default="fft")
         group.add_option("--residuals", dest="residuals", type="image", 
-                         help="Image containging the residials from a model fit. If not specified, BASIL options must be given to perform model fit")
+                         help="Image containing the residials from a model fit. If not specified, BASIL options must be given to perform model fit")
+        group.add_option("--addimg", type="image", help="Additional image to deblur using same residuals. Output will be saved as <filename>_deblur")
         return [group]
 
 def main():
@@ -429,10 +435,14 @@ def main():
 
         asldata.summary()
         wsp.asldata_deblur = deblur(wsp, wsp.asldata)
-        if wsp.calib is not None:
-            wsp.calib_deblur = deblur(wsp, wsp.calib)
-
         wsp.asldata_deblur.save(options.output)
+        if wsp.calib is not None:
+            # FIXME accessible only within pipeline
+            wsp.calib_deblur = deblur(wsp, wsp.calib)
+        elif wsp.addimg is not None:
+            wsp.addimg_deblur = deblur(wsp, wsp.addimg)
+            wsp.addimg_deblur.save(options.addimg.name + "_deblur")
+
         print('\nOXASL_DEBLUR - DONE - output is %s' % options.output)
 
     except RuntimeError as e:
