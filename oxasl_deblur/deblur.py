@@ -399,9 +399,10 @@ class DeblurOptions(OptionCategory):
         group.add_option("--method", dest="deblur_method", 
                          help="Deblurring method: Choicess are 'fft' for division in FFT domain or 'lucy' for Lucy-Richardson (ML solution) for Gaussian noise", 
                          choices=["fft", "lucy"], default="fft")
-        group.add_option("--residuals", dest="residuals", type="image", 
+        group.add_option("--residuals", type="image",
                          help="Image containing the residials from a model fit. If not specified, BASIL options must be given to perform model fit")
         group.add_option("--addimg", type="image", help="Additional image to deblur using same residuals. Output will be saved as <filename>_deblur")
+        group.add_option("--addimg-output", help="Name of output for additional image - if not specified defaults to <filename>_deblur")
         return [group]
 
 def main():
@@ -417,7 +418,9 @@ def main():
         
         options, _ = parser.parse_args()
         if not options.output:
-            options.output = "deblur_output"
+            options.output = options.asldata + "_deblur"
+        if options.addimg is not None and not options.addimg_output:
+            options.addimg_output = options.addimg.name + "_deblur"
 
         if not options.asldata:
             sys.stderr.write("Input ASL data not specified\n")
@@ -441,7 +444,7 @@ def main():
             wsp.calib_deblur = deblur(wsp, wsp.calib)
         elif wsp.addimg is not None:
             wsp.addimg_deblur = deblur(wsp, wsp.addimg)
-            wsp.addimg_deblur.save(options.addimg.name + "_deblur")
+            wsp.addimg_deblur.save(options.addimg_output)
 
         print('\nOXASL_DEBLUR - DONE - output is %s' % options.output)
 
