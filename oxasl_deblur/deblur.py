@@ -372,10 +372,13 @@ def deblur(wsp, deblur_img):
     
     # Discard padding and return
     dataout = dataout[:, :, 2:-2, :]
+    if deblur_img.data.ndim == 3:
+        dataout = np.squeeze(dataout, axis=3)
+
     if isinstance(deblur_img, AslImage):
         ret = deblur_img.derived(dataout)
     else:
-        ret = Image(np.squeeze(dataout, axis=3), header=deblur_img.header)
+        ret = Image(dataout, header=deblur_img.header)
 
     wsp.log.write('DONE\n')
     return ret
