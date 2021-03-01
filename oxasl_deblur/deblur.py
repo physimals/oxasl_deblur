@@ -340,11 +340,11 @@ def run(wsp, output_wsp=None):
     if wsp.residuals is None:
         get_residuals(wsp.deblur)
 
-    wsp.deblur.asldata = deblur_img(wsp.deblur, wsp.asldata)
+    output_wsp.asldata = deblur_img(wsp.deblur, wsp.asldata)
     if wsp.calib is not None:
-        wsp.deblur.calib = deblur_img(wsp.deblur, wsp.calib)
+        output_wsp.calib = deblur_img(wsp.deblur, wsp.calib)
     if wsp.addimg is not None:
-        wsp.deblur.addimg = deblur_img(wsp.deblur, wsp.addimg)
+        output_wsp.addimg = deblur_img(wsp.deblur, wsp.addimg)
     # FIXME CATC, CBLIP...
 
     wsp.log.write('DONE\n')
@@ -431,7 +431,6 @@ class Options(OptionCategory):
         group.add_option("--residuals", type="image",
                          help="Image containing the residials from a model fit. If not specified, BASIL options must be given to perform model fit")
         group.add_option("--addimg", type="image", help="Additional image to deblur using same residuals. Output will be saved as <filename>_deblur")
-        group.add_option("--addimg-output", help="Name of output for additional image - if not specified defaults to <filename>_deblur")
         group.add_option("--save-kernel", help="Save deblurring kernel", action="store_true", default=False)
         return [group]
 
@@ -459,11 +458,8 @@ def main():
         print("OXASL_DEBLUR %s (%s)\n" % (__version__, __timestamp__))
         wsp = Workspace(savedir=options.output, auto_asldata=True, **vars(options))
         wsp.asldata.summary()
-        run(wsp)
         wsp.sub("output")
-        wsp.output.asldata = wsp.deblur.asldata
-        wsp.output.addimg = wsp.deblur.addimg
-        wsp.output.calib = wsp.deblur.calib
+        run(wsp, output_wsp=wsp.output)
         if wsp.save_kernel:
             wsp.output.kernel = wsp.deblur.kernel
 
