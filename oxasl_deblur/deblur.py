@@ -29,9 +29,8 @@ from scipy.optimize import curve_fit
 
 from fsl.data.image import Image
 
-from oxasl import Workspace, AslImage, image, basil
-from oxasl.mask import generate_mask
-from oxasl.options import AslOptionParser, OptionCategory, IgnorableOptionGroup, GenericOptions
+from oxasl import Workspace, AslImage, image, basil, mask
+from oxasl.options import AslOptionParser, OptionCategory, OptionGroup, GenericOptions
 
 from ._version import __version__, __timestamp__
 
@@ -309,20 +308,52 @@ def zdeblur_with_kern(volume, kern, deblur_method="fft"):
 #     deblur_image = None
 #     return deblur_image 
 
-def deblur_basil(wsp):
+def get_residuals(wsp):
     """
     Run BASIL on ASL data to get residuals prior to deblurring
     """
-    basil_output = wsp.sub("basil_output")
-    wsp.basil_options = {"save-residuals" : True}
-    basil.basil(wsp, output_wsp=basil_output)
-    wsp.residuals = basil_output.finalstep.residuals
+    wsp.log.write(' - Running BASIL to generate residuals\n')
+    wsp.sub("basil")
+    wsp.basil_options = {
+        "save-residuals" : True,
+    #    "inferart" : False,
+    #    "spatial" : False,
+    }
+    basil.basil(wsp, output_wsp=wsp.basil)
+    wsp.residuals = wsp.basil.finalstep.residuals
 
-def deblur(wsp, deblur_img):
+def run(wsp, output_wsp=None):
+    """
+    Run deblurring on an OXASL workspace
+    """
+    wsp.sub("deblur")
+    if output_wsp is None:
+        output_wsp = wsp.deblur
+    wsp.log.write('\nDeblurring data\n')
+
+    if wsp.mask is None:
+        mask.generate_mask(wsp.deblur)
+        wsp.deblur.mask = wsp.deblur.rois.mask
+    else:
+        wsp.deblur.mask = wsp.mask
+
+    if wsp.residuals is None:
+        get_residuals(wsp.deblur)
+
+    wsp.deblur.asldata = deblur_img(wsp.deblur, wsp.asldata)
+    if wsp.calib is not None:
+        wsp.deblur.calib = deblur_img(wsp.deblur, wsp.calib)
+    if wsp.addimg is not None:
+        wsp.deblur.addimg = deblur_img(wsp.deblur, wsp.addimg)
+    # FIXME CATC, CBLIP...
+
+    wsp.log.write('DONE\n')
+
+def deblur_img(wsp, img):
     """
     Do deblurring on ASL data
 
-    :param deblur_img: Image to deblur. If AslImage is provided, an AslImage is returned
+    :param img: Image to deblur. If AslImage is provided, an AslImage is returned
     :return: Image or AslImage
     
     Required workspace attributes
@@ -338,52 +369,47 @@ def deblur(wsp, deblur_img):
      - ``residuals`` : Residuals from model fit on ASL data. If not specified and ``wsp.asldata``
                        is provided, will run BASIL fitting on this data to generate residuals
     """
-    generate_mask(wsp)
-    if wsp.residuals is None:
-        deblur_basil(wsp)
-
-    wsp.log.write('\nDeblurring image %s\n' % deblur_img.name)
-    wsp.log.write(' - kernel: %s\n' % wsp.deblur_kernel)
-    wsp.log.write(' - method: %s\n' % wsp.deblur_method)
-    
-    deblur_data = deblur_img.data
-    # Ensure image is 4D
+    # Ensure data is 4D by padding additional dimension if necessary
+    deblur_data = img.data
     if deblur_data.ndim == 3:
         deblur_data = deblur_data[..., np.newaxis]
 
     # Pad the data - 2 slices top and bottom
     data_pad = np.pad(deblur_data, [(0, 0), (0, 0), (2, 2), (0, 0)], 'edge')
  
-    # Number of slices that are non zero in mask
-    maskser = np.sum(wsp.mask.data, (0, 1))
-    nslices = np.sum(maskser > 0)
-    flatmask = flattenmask(wsp.mask.data, nslices-2)
+    if wsp.kernel is None:
+        wsp.log.write(' - Using kernel: %s\n' % wsp.deblur_kernel)
+        wsp.log.write(' - Deblur method: %s\n' % wsp.deblur_method)
+        # Number of slices that are non zero in mask
+        maskser = np.sum(wsp.mask.data, (0, 1))
+        nslices = np.sum(maskser > 0)
+        flatmask = flattenmask(wsp.mask.data, nslices-2)
 
-    # Commented out in MATLAB code
-    # residser = zdeblur_make_series(resids,flatmask)
-    thespecd = zdeblur_make_spec(wsp.residuals.data, flatmask)
+        # Commented out in MATLAB code
+        # residser = zdeblur_make_series(resids,flatmask)
+        thespecd = zdeblur_make_spec(wsp.residuals.data, flatmask)
 
-    # NB data has more slices than residuals
-    sig = wsp.ifnone("sig", 1)
-    kern = create_deblur_kern(thespecd, wsp.deblur_kernel, data_pad.shape[2], sig)
+        # NB data has more slices than residuals
+        sig = wsp.ifnone("sig", 1)
+        wsp.kernel = create_deblur_kern(thespecd, wsp.deblur_kernel, data_pad.shape[2], sig)
 
     # Do deblurring
-    dataout = zdeblur_with_kern(data_pad, kern, wsp.deblur_method)
+    wsp.log.write(' - Deblurring image %s\n' % img.name)
+    dataout = zdeblur_with_kern(data_pad, wsp.kernel, wsp.deblur_method)
     
     # Discard padding and return
     dataout = dataout[:, :, 2:-2, :]
-    if deblur_img.data.ndim == 3:
+    if img.data.ndim == 3:
         dataout = np.squeeze(dataout, axis=3)
 
-    if isinstance(deblur_img, AslImage):
-        ret = deblur_img.derived(dataout)
+    if isinstance(img, AslImage):
+        ret = img.derived(dataout)
     else:
-        ret = Image(dataout, header=deblur_img.header)
+        ret = Image(dataout, header=img.header)
 
-    wsp.log.write('DONE\n')
     return ret
 
-class DeblurOptions(OptionCategory):
+class Options(OptionCategory):
     """
     DEBLUR option category
     """
@@ -391,7 +417,7 @@ class DeblurOptions(OptionCategory):
         OptionCategory.__init__(self, "deblur", **kwargs)
 
     def groups(self, parser):
-        group = IgnorableOptionGroup(parser, "DEBLUR options", ignore=self.ignore)
+        group = OptionGroup(parser, "DEBLUR options")
         group.add_option("--kernel", dest="deblur_kernel", 
                          help="Deblurring kernel: Choices are 'direct' (estimate kernel directly from data), "
                               "'gauss' - Gaussian kernel but estimate size from data, "
@@ -406,6 +432,7 @@ class DeblurOptions(OptionCategory):
                          help="Image containing the residials from a model fit. If not specified, BASIL options must be given to perform model fit")
         group.add_option("--addimg", type="image", help="Additional image to deblur using same residuals. Output will be saved as <filename>_deblur")
         group.add_option("--addimg-output", help="Name of output for additional image - if not specified defaults to <filename>_deblur")
+        group.add_option("--save-kernel", help="Save deblurring kernel", action="store_true", default=False)
         return [group]
 
 def main():
@@ -415,15 +442,14 @@ def main():
     try:
         parser = AslOptionParser(usage="oxasl_deblur -i <ASL input file> [options...]", version=__version__)
         parser.add_category(image.AslImageOptions())
-        parser.add_category(DeblurOptions())
+        parser.add_category(Options())
         parser.add_category(basil.BasilOptions())
-        parser.add_category(GenericOptions(output_type="file"))
-        
+        #parser.add_category(calib.CalibOptions())
+        parser.add_category(GenericOptions())
+
         options, _ = parser.parse_args()
         if not options.output:
-            options.output = options.asldata + "_deblur"
-        if options.addimg is not None and not options.addimg_output:
-            options.addimg_output = options.addimg.name + "_deblur"
+            options.output = "oxasl_deblur"
 
         if not options.asldata:
             sys.stderr.write("Input ASL data not specified\n")
@@ -431,23 +457,19 @@ def main():
             sys.exit(1)
                 
         print("OXASL_DEBLUR %s (%s)\n" % (__version__, __timestamp__))
-        asldata = AslImage(options.asldata, **parser.filter(options, "image"))
+        wsp = Workspace(savedir=options.output, auto_asldata=True, **vars(options))
+        wsp.asldata.summary()
+        run(wsp)
+        wsp.sub("output")
+        wsp.output.asldata = wsp.deblur.asldata
+        wsp.output.addimg = wsp.deblur.addimg
+        wsp.output.calib = wsp.deblur.calib
+        if wsp.save_kernel:
+            wsp.output.kernel = wsp.deblur.kernel
 
-        if options.debug:
-            wsp = Workspace(savedir=options.output + "_debug", **vars(options))
-        else:
-            wsp = Workspace(**vars(options))
-        wsp.asldata = asldata
-
-        asldata.summary()
-        wsp.asldata_deblur = deblur(wsp, wsp.asldata)
-        wsp.asldata_deblur.save(options.output)
-        if wsp.calib is not None:
-            # FIXME accessible only within pipeline
-            wsp.calib_deblur = deblur(wsp, wsp.calib)
-        elif wsp.addimg is not None:
-            wsp.addimg_deblur = deblur(wsp, wsp.addimg)
-            wsp.addimg_deblur.save(options.addimg_output)
+        if not wsp.debug:
+            wsp.deblur = None
+            wsp.input = None
 
         print('\nOXASL_DEBLUR - DONE - output is %s' % options.output)
 
