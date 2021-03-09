@@ -209,7 +209,7 @@ def create_deblur_kern(thefft, kernel_name, kernel_length, sig=1):
     # note that currently all the ffts have zero DC term!
     invkern = np.reciprocal(np.clip(thefft[1:], 1e-50, None))
     kernel = np.real(ifft(np.insert(invkern, 0, 0)))
-    
+
     # Code below is commented out in MATLAB original - preserving for now
 
     # Weiner filter
@@ -251,7 +251,7 @@ def zdeblur_with_kern(volume, kernel, deblur_method="fft"):
         # Demean volume along Z axis - kernel is zero mean
         zmean = np.expand_dims(np.mean(volume, 2), 2)
         volume = volume  - zmean
-        
+
         fftkern = np.expand_dims(fftkern, 0)
         fftkern = np.expand_dims(fftkern, 0)
         fftkern = np.expand_dims(fftkern, -1)
@@ -384,7 +384,7 @@ def data_pad(img, padding_slices=2):
 
     # Pad the data - 2 slices top and bottom
     return np.pad(data, [(0, 0), (0, 0), (padding_slices, padding_slices), (0, 0)], 'edge')
- 
+
 def data_unpad(padded_data, padding_slices=2):
     """
     :param padded_data: Numpy array of data padded by 2 slices top and bottom
@@ -459,6 +459,7 @@ class Options(OptionCategory):
                          help="Image containing the residials from a model fit. If not specified, BASIL options must be given to perform model fit")
         group.add_option("--addimg", type="image", help="Additional image to deblur using same residuals. Output will be saved as <filename>_deblur")
         group.add_option("--save-kernel", help="Save deblurring kernel", action="store_true", default=False)
+        group.add_option("--save-residuals", help="Save residuals used to generate kernel", action="store_true", default=False)
         return [group]
 
 def main():
@@ -489,6 +490,8 @@ def main():
         run(wsp, output_wsp=wsp.output)
         if wsp.save_kernel:
             wsp.output.kernel = wsp.deblur.kernel
+        if wsp.save_residuals:
+            wsp.output.residuals = wsp.deblur.residuals
 
         if not wsp.debug:
             wsp.deblur = None
