@@ -98,7 +98,7 @@ def lorentzian(x, gamma):
 
 def lorentzian_kern(gamma, length, demean=True):
     half = (float(length)-1)/2
-    x = range(0, int(ceil(half))+1) + range(int(floor(half)), 0, -1)
+    x = list(range(int(ceil(half))+1)) + list(range(int(floor(half)), 0, -1))
     out = lorentzian(x, gamma)
     if demean: out = out - np.mean(out) #zero mean/DC
     return out
