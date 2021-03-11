@@ -159,14 +159,14 @@ def fit_gaussian_autocorr(thefft):
     popt, _ = curve_fit(gaussian_autocorr, len(data_raw_autocorr), data_raw_autocorr, 1)
     return popt[0]
 
-def create_deblur_kern(thefft, kernel_name, kernel_length, sig=1):
+def create_deblur_kern(wsp, thefft, kernel_length, sig=1):
     """
     Create the deblurring kernel
 
     :param kernel_name: Kernel name
     """
     np.set_printoptions(precision=16)
-    if kernel_name == "direct":
+    if wsp.deblur_kernel == "direct":
         slope = thefft[1]-thefft[2]
         thefft[0] = thefft[1]+slope #put the mean in for tapering of the AC
         thefft = thefft/(thefft[1]+slope) #normalise, we want DC=1, but we will have to extrapolate as we dont ahve DC
@@ -176,15 +176,18 @@ def create_deblur_kern(thefft, kernel_name, kernel_length, sig=1):
         t1 = 1-tukey(len(thefft), sig)
         thefft = np.sqrt(np.absolute(fft(np.multiply(i1, t1))))
         thefft[0] = 0 # back to zero mean
-    elif kernel_name == "lorentz":
+    elif wsp.deblur_kernel == "lorentz":
         ac = np.real(ifft(np.square(thefft))) # autocorrelation
         ac = ac/max(ac)
         popt, _ = curve_fit(lorentzian_autocorr, len(ac), ac, 2)
-        gamma = popt[0]
+        # Lorentzian autocorrelation function is even but for consistency
+        # make gamma positive
+        gamma = np.abs(popt[0])
+        wsp.log.write(" - Lorentzian kernel: Gamma=%.3f\n" % gamma)
         lozac = lorentzian_autocorr(kernel_length, gamma)
         lozac = lozac/max(lozac)
         thefft = np.absolute(fft(lorentzian_kern(gamma, kernel_length, True))) # when getting final spec. den. include mean
-    elif kernel_name == "lorwien":
+    elif wsp.deblur_kernel == "lorwien":
         ac = np.real(ifft(np.square(thefft))) # autocorrelation
         ac = ac/max(ac)
         popt, _ = curve_fit(lorentzian_wiener, len(ac), ac, (2, 0.01))
@@ -196,15 +199,15 @@ def create_deblur_kern(thefft, kernel_name, kernel_length, sig=1):
         wien = np.divide(thepsd, thepsd+tune)
         wien[0] = 1
         thefft = np.divide(thefft, wien)
-    elif kernel_name == "gauss":
+    elif wsp.deblur_kernel == "gauss":
         sigfit = fit_gaussian_autocorr(thefft)
         thefft = gaussian_fft(sigfit, kernel_length, True) # When getting final spec. den. include mean
-    elif kernel_name == "manual":
+    elif wsp.deblur_kernel == "manual":
         if len(sig) != kernel_length:
             raise RuntimeError("Manual deblur kernel requires signal of length %i" % kernel_length)
         thefft = gaussian_fft(sig, kernel_length, True)
     else:
-        raise RuntimeError("Unknown kernel: %s" % kernel_name)
+        raise RuntimeError("Unknown kernel: %s" % wsp.deblur_kernel)
 
     # note that currently all the ffts have zero DC term!
     invkern = np.reciprocal(np.clip(thefft[1:], 1e-50, None))
@@ -411,7 +414,7 @@ def get_kernel(wsp):
         wsp.log.write(' - Using kernel: %s\n' % wsp.deblur_kernel)
         data_padded = data_pad(wsp.asldata)
         sig = wsp.ifnone("sig", 1)
-        wsp.kernel = create_deblur_kern(thespecd, wsp.deblur_kernel, data_padded.shape[2], sig)
+        wsp.kernel = create_deblur_kern(wsp, thespecd, data_padded.shape[2], sig)
 
 def deblur_img(wsp, img):
     """
