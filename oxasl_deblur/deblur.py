@@ -177,25 +177,28 @@ def create_deblur_kern(wsp, thefft, kernel_length, sig=1):
         thefft = np.sqrt(np.absolute(fft(np.multiply(i1, t1))))
         thefft[0] = 0 # back to zero mean
     elif wsp.deblur_kernel == "lorentz":
-        ac = np.real(ifft(np.square(thefft))) # autocorrelation
-        ac = ac/max(ac)
-        popt, _ = curve_fit(lorentzian_autocorr, len(ac), ac, 2)
-        # Lorentzian autocorrelation function is even but for consistency
-        # make gamma positive
-        gamma = np.abs(popt[0])
-        wsp.log.write(" - Lorentzian kernel: Gamma=%.3f\n" % gamma)
-        lozac = lorentzian_autocorr(kernel_length, gamma)
+        if wsp.deblur_gamma is None:
+            ac = np.real(ifft(np.square(thefft))) # autocorrelation
+            ac = ac/max(ac)
+            popt, _ = curve_fit(lorentzian_autocorr, len(ac), ac, 2)
+            # Autocorrelation function is even but for consistency make gamma positive
+            wsp.deblur_gamma = np.abs(popt[0])
+        wsp.log.write(" - Lorentzian kernel: Gamma=%.4f\n" % wsp.deblur_gamma)
+        lozac = lorentzian_autocorr(kernel_length, wsp.deblur_gamma)
         lozac = lozac/max(lozac)
-        thefft = np.absolute(fft(lorentzian_kern(gamma, kernel_length, True))) # when getting final spec. den. include mean
+        thefft = np.absolute(fft(lorentzian_kern(wsp.deblur_gamma, kernel_length, True))) # when getting final spec. den. include mean
     elif wsp.deblur_kernel == "lorwien":
-        ac = np.real(ifft(np.square(thefft))) # autocorrelation
-        ac = ac/max(ac)
-        popt, _ = curve_fit(lorentzian_wiener, len(ac), ac, (2, 0.01))
-        gamma, tunef = popt
-        lozac = lorentzian_wiener(kernel_length, gamma, tunef)
-        thefft = np.absolute(fft(lorentzian_kern(gamma, kernel_length, True))) # when getting final spec. den. include mean
+        if wsp.deblur_gamma is None:
+            ac = np.real(ifft(np.square(thefft))) # autocorrelation
+            ac = ac/max(ac)
+            popt, _ = curve_fit(lorentzian_wiener, len(ac), ac, (2, 0.01))
+            wsp.deblur_gamma = np.abs(popt[0])
+            wsp.deblur_tunef = popt[1]
+        wsp.log.write(" - Lorentizian-Weiner kernel: Gamma=%.4f, tunef=%.4f\n" % (wsp.deblur_gamma, wsp.deblur_tunef))
+        lozac = lorentzian_wiener(kernel_length, wsp.deblur_gamma, wsp.deblur_tunef)
+        thefft = np.absolute(fft(lorentzian_kern(wsp.deblur_gamma, kernel_length, True))) # when getting final spec. den. include mean
         thepsd = np.square(thefft)
-        tune = tunef*np.mean(thepsd)
+        tune = wsp.deblur_tunef*np.mean(thepsd)
         wien = np.divide(thepsd, thepsd+tune)
         wien[0] = 1
         thefft = np.divide(thefft, wien)
@@ -452,9 +455,10 @@ class Options(OptionCategory):
                               "'gauss' - Gaussian kernel but estimate size from data, "
                               "'manual' - Gaussian kernel with size given by sigma"
                               "'lorentz' - Lorentzian kernel, estimate size from data"
-                              "'lorwein' - Lorentzian kernel with weiner type filter", 
-                         choices=["direct", "gauss", "manual", "lorentz", "lorwein"], default="direct")
+                              "'lorwien' - Lorentzian kernel with weiner type filter", 
+                         choices=["direct", "gauss", "manual", "lorentz", "lorwien"], default="direct")
         group.add_option("--kernel-file", dest="kernel", help="File containing pre-specified deblurring kernel data", type="matrix")
+        group.add_option("--deblur-gamma", help="Value of gamma to use in lorentzian kernels", type="float")
         group.add_option("--method", dest="deblur_method", 
                          help="Deblurring method: Choicess are 'fft' for division in FFT domain or 'lucy' for Lucy-Richardson (ML solution) for Gaussian noise", 
                          choices=["fft", "lucy"], default="fft")
