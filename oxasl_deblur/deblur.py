@@ -104,7 +104,8 @@ def lorentzian_kern(gamma, length, demean=True):
     return out
 
 def lorentzian_autocorr(length, gamma):
-    return np.real(ifft(np.square(np.absolute(fft(lorentzian_kern(gamma, length, 1))))))
+    autocorr = np.real(ifft(np.square(np.absolute(fft(lorentzian_kern(gamma, length, 1))))))
+    return autocorr / np.max(autocorr)
 
 def lorentzian_wiener(length, gamma, tunef):
     thefft = np.absolute(fft(lorentzian_kern(gamma, length, True)))
