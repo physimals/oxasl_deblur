@@ -286,7 +286,7 @@ def zdeblur_with_kern(volume, kernel, deblur_method="fft"):
 #     # Output --> deblurred deltaM maps
 #     #
 #     # (c) Michael A. Chappell & Illaria Boscolo Galazzo, University of Oxford, 2012-2014
-
+#
 #     # MAC 4/4/14 removed the creation of the lorentz kernel and allow to accept
 #     # any kernel
 #     #
@@ -297,14 +297,14 @@ def zdeblur_with_kern(volume, kernel, deblur_method="fft"):
 #     matrix_kernel[:, 0] = kernel_max
 #     for i in range(1, ns):
 #         matrix_kernel[:, i] = np.concatenate([np.zeros(i), kernel_max[:ns-i]])
-    
+#
 #     # Invert with SVD
 #     #U, S, V = svd(matrix_kernel)
 #     #W = np.diag(np.reciprocal(np.diag(S)))
 #     #W[S < (0.2*S[0])] = 0
 #     #inverse_matrix = V*W*U.'
 #     inverse_matrix = np.linalg.inv(matrix_kernel)
-    
+#
 #     # Deblurring Algorithm
 #     index = 1
 #     for i in range(1, nr+1):
@@ -476,7 +476,7 @@ def main():
     """
     try:
         parser = AslOptionParser(usage="oxasl_deblur -i <ASL input file> [options...]", version=__version__)
-        parser.add_category(image.AslImageOptions())
+        parser.add_category(image.Options())
         parser.add_category(Options())
         parser.add_category(basil.BasilOptions())
         #parser.add_category(calib.CalibOptions())
