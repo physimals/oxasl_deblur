@@ -372,9 +372,14 @@ def run(wsp, output_wsp=None):
     output_wsp.asldata = deblur_img(wsp.deblur, wsp.asldata)
     if wsp.calib is not None:
         output_wsp.calib = deblur_img(wsp.deblur, wsp.calib)
+    if wsp.cblip is not None:
+        output_wsp.cblip = deblur_img(wsp.deblur, wsp.cblip)
+    if wsp.cref is not None:
+        output_wsp.cref = deblur_img(wsp.deblur, wsp.cref)
+    if wsp.cact is not None:
+        output_wsp.cact = deblur_img(wsp.deblur, wsp.cact)
     if wsp.addimg is not None:
         output_wsp.addimg = deblur_img(wsp.deblur, wsp.addimg)
-    # FIXME CATC, CBLIP...
 
     wsp.log.write('DONE\n')
 
@@ -494,6 +499,8 @@ def main():
         print("OXASL_DEBLUR %s (%s)\n" % (__version__, __timestamp__))
         wsp = Workspace(savedir=options.output, auto_asldata=True, **vars(options))
         wsp.asldata.summary()
+        wsp.sub("reg")
+        wsp.reg.nativeref = wsp.asldata.perf_weighted()
         wsp.sub("output")
         run(wsp, output_wsp=wsp.output)
         if wsp.save_kernel:
