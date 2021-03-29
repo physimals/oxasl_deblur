@@ -259,9 +259,8 @@ def zdeblur_with_kern(volume, kernel, deblur_method="fft"):
         zmean = np.expand_dims(np.mean(volume, 2), 2)
         volume = volume  - zmean
 
-        fftkern = np.expand_dims(fftkern, 0)
-        fftkern = np.expand_dims(fftkern, 0)
-        fftkern = np.expand_dims(fftkern, -1)
+        fftkern = np.squeeze(fftkern)
+        fftkern = fftkern[np.newaxis, np.newaxis, ..., np.newaxis]
         fftkern2 = np.zeros(volume.shape, dtype=complex)
         fftkern2[:, :, :, :] = fftkern
         fftvol = fft(volume, axis=2)
