@@ -1,7 +1,7 @@
 """
 OXASL DEBLUR
 
-Perform z-deblurring of ASL data
+Perform Z-deblurring of ASL data
 
 kernel options are:
   direct - estimate kernel directly from data
@@ -9,6 +9,9 @@ kernel options are:
   manual - gauss kernel with size given by sigma
   lorentz - lorentzain kernel, estimate size from data
   lorwein - lorentzian kernel with weiner type filter
+
+A kernel can also be supplied as a set of values (a 
+centered PSF, not necessarily normalized)
 
 deblur methods are:
   fft - do division in FFT domain
@@ -24,7 +27,7 @@ from math import exp, pi, ceil, floor, sqrt
 import numpy as np
 
 from scipy.fftpack import fft, ifft
-from scipy.signal import tukey
+from scipy.signal import tukey, convolve
 from scipy.optimize import curve_fit
 
 from fsl.data.image import Image
@@ -83,15 +86,15 @@ def zvols_to_matrix(data, mask):
     data2 = np.reshape(data, [mask.size, data.shape[3]]) # Shape [X*Y*T, Z]
     return data2[mask, :]
 
-def zdeblur_make_spec(resids, flatmask):
-    # Mask and de-mean residuals
+def get_mean_fft_z(resids, flatmask):
+    # Get masked data as matrix: [XYT, Z] and de-mean along Z axis
     zdata = zvols_to_matrix(resids, flatmask)
-    mean = zdata.mean(axis=1, dtype=np.float64)
-    ztemp = zdata - mean[:, np.newaxis]
+    zdata_demeaned = zdata - np.mean(zdata, axis=1)[..., np.newaxis]
     
-    thepsd = np.absolute(fft(ztemp, axis=1))
-    thepsd = np.mean(thepsd, 0)
-    return thepsd
+    # Take FFT along Z axis and mean over XYT
+    fft_z = np.absolute(fft(zdata_demeaned, axis=1))
+    mean_fft_z = np.mean(fft_z, 0)
+    return mean_fft_z
 
 def lorentzian(x, gamma):
     return 1/pi * (0.5*gamma)/(np.square(x)+(0.5*gamma)**2)
@@ -116,7 +119,7 @@ def lorentzian_wiener(length, gamma, tunef):
     out = np.real(ifft(np.divide(thepsd, np.square(wien))))
     return out/max(out)
 
-def gaussian_autocorr(length, sig):
+def gaussian_autocorr(length, sigma):
     """
     Returns the autocorrelation function for Gaussian smoothed white
     noise with length data points, where the Gaussian std dev is sigma
@@ -125,14 +128,14 @@ def gaussian_autocorr(length, sig):
     (autocorr is ifft of the power spectral density)
     ideally , we should just analytically calc the autocorr
     """
-    gfft = gaussian_fft(sig, length)
+    gfft = gaussian_fft(sigma, length)
     x = np.real(ifft(np.square(gfft))) 
 
     if max(x) > 0:
         x = x/max(x)
     return x
 
-def gaussian_fft(sig, length, demean=True):
+def gaussian_fft(sigma, length, demean=True):
     """
     Returns the fourier transform function for Gaussian smoothed white
     noise with length data points, where the Gaussian std dev is sigma
@@ -142,7 +145,7 @@ def gaussian_fft(sig, length, demean=True):
     maxk = 1/tres
     krange = np.linspace(fres, maxk, length)
     
-    x = [sig*exp(-(0.5*sig**2*(2*pi*k)**2))+sqrt(2*pi)*sig*exp(-(0.5*sig**2*(2*pi*((maxk+fres)-k))**2))
+    x = [sigma*exp(-(0.5*sigma**2*(2*pi*k)**2))+sqrt(2*pi)*sigma*exp(-(0.5*sigma**2*(2*pi*((maxk+fres)-k))**2))
          for k in krange]
     if demean: x[0] = 0
     return x
@@ -160,119 +163,257 @@ def fit_gaussian_autocorr(thefft):
     popt, _ = curve_fit(gaussian_autocorr, len(data_raw_autocorr), data_raw_autocorr, 1)
     return popt[0]
 
-def create_deblur_kern(wsp, thefft, kernel_length, sig=1):
+def create_deblur_kern(wsp, mean_fft_z, kernel_length):
     """
     Create the deblurring kernel
-
-    :param kernel_name: Kernel name
     """
+    sig = wsp.ifnone("sig", 1)
     np.set_printoptions(precision=16)
     if wsp.deblur_kernel == "direct":
-        slope = thefft[1]-thefft[2]
-        thefft[0] = thefft[1]+slope #put the mean in for tapering of the AC
-        thefft = thefft/(thefft[1]+slope) #normalise, we want DC=1, but we will have to extrapolate as we dont ahve DC
+        slope = mean_fft_z[1]-mean_fft_z[2]
+        mean_fft_z[0] = mean_fft_z[1]+slope #put the mean in for tapering of the AC
+        mean_fft_z = mean_fft_z/(mean_fft_z[1]+slope) #normalise, we want DC=1, but we will have to extrapolate as we dont have DC
         
         # multiply AC by tukey window
-        i1 = np.real(ifft(np.square(thefft)))
-        t1 = 1-tukey(len(thefft), sig)
-        thefft = np.sqrt(np.absolute(fft(np.multiply(i1, t1))))
-        thefft[0] = 0 # back to zero mean
+        i1 = np.real(ifft(np.square(mean_fft_z)))
+        t1 = 1-tukey(len(mean_fft_z), sig)
+        kernel = np.multiply(i1, t1)
+        kernel_fft = np.sqrt(np.absolute(fft(kernel)))
+        wsp.kernel = np.absolute(ifft(kernel_fft))
     elif wsp.deblur_kernel == "lorentz":
         if wsp.deblur_gamma is None:
-            ac = np.real(ifft(np.square(thefft))) # autocorrelation
+            ac = np.real(ifft(np.square(mean_fft_z))) # autocorrelation
             ac = ac/max(ac)
             popt, _ = curve_fit(lorentzian_autocorr, len(ac), ac, 2)
             # Autocorrelation function is even but for consistency make gamma positive
             wsp.deblur_gamma = np.abs(popt[0])
         wsp.log.write(" - Lorentzian kernel: Gamma=%.4f\n" % wsp.deblur_gamma)
-        lozac = lorentzian_autocorr(kernel_length, wsp.deblur_gamma)
-        lozac = lozac/max(lozac)
-        thefft = np.absolute(fft(lorentzian_kern(wsp.deblur_gamma, kernel_length, True))) # when getting final spec. den. include mean
+        wsp.kernel = lorentzian_kern(wsp.deblur_gamma, kernel_length, False)
     elif wsp.deblur_kernel == "lorwien":
         if wsp.deblur_gamma is None:
-            ac = np.real(ifft(np.square(thefft))) # autocorrelation
+            ac = np.real(ifft(np.square(mean_fft_z))) # autocorrelation
             ac = ac/max(ac)
             popt, _ = curve_fit(lorentzian_wiener, len(ac), ac, (2, 0.01))
             wsp.deblur_gamma = np.abs(popt[0])
             wsp.deblur_tunef = popt[1]
         wsp.log.write(" - Lorentizian-Weiner kernel: Gamma=%.4f, tunef=%.4f\n" % (wsp.deblur_gamma, wsp.deblur_tunef))
-        lozac = lorentzian_wiener(kernel_length, wsp.deblur_gamma, wsp.deblur_tunef)
-        thefft = np.absolute(fft(lorentzian_kern(wsp.deblur_gamma, kernel_length, True))) # when getting final spec. den. include mean
+        kernel = lorentzian_kern(wsp.deblur_gamma, kernel_length, False)
+        thefft = np.absolute(fft(kernel)) # when getting final spec. den. include mean
         thepsd = np.square(thefft)
         tune = wsp.deblur_tunef*np.mean(thepsd)
         wien = np.divide(thepsd, thepsd+tune)
         wien[0] = 1
-        thefft = np.divide(thefft, wien)
+        kernel_fft = np.divide(thefft, wien)
+        wsp.kernel = ifft(kernel_fft)
     elif wsp.deblur_kernel == "gauss":
-        sigfit = fit_gaussian_autocorr(thefft)
-        thefft = gaussian_fft(sigfit, kernel_length, True) # When getting final spec. den. include mean
+        sigfit = fit_gaussian_autocorr(mean_fft_z)
+        kernel_fft = gaussian_fft(sigfit, kernel_length, True) # When getting final spec. den. include mean
+        wsp.kernel = ifft(kernel_fft)
     elif wsp.deblur_kernel == "manual":
         if len(sig) != kernel_length:
             raise RuntimeError("Manual deblur kernel requires signal of length %i" % kernel_length)
-        thefft = gaussian_fft(sig, kernel_length, True)
+        kernel_fft = gaussian_fft(sig, kernel_length, True)
+        wsp.kernel = ifft(kernel_fft)
     else:
         raise RuntimeError("Unknown kernel: %s" % wsp.deblur_kernel)
 
-    # note that currently all the ffts have zero DC term!
-    invkern = np.reciprocal(np.clip(thefft[1:], 1e-50, None))
-    kernel = np.real(ifft(np.insert(invkern, 0, 0)))
+def deblur_fft(wsp, volume):
+    """
+    Deconvolution implementation using division in FFT space
+    """
+    # Demean volume along Z axis - kernel is zero mean
+    # This means the DC term in the kernel does not matter - we don't
+    # need to demean the kernel
+    zmean = np.expand_dims(np.mean(volume, 2), 2)
+    volume = volume  - zmean
 
-    # Code below is commented out in MATLAB original - preserving for now
+    fftkern = fft(wsp.kernel)[np.newaxis, np.newaxis, ..., np.newaxis]
+    fftvol = fft(volume, axis=2)
+    volout = np.real(ifft(np.divide(fftvol, fftkern), axis=2))
+    volout += zmean
+    return volout
 
-    # Weiner filter
-    # thepsd = thefft.^2
-    # tune = 0.01*mean(thepsd)
-    # invkern = 1./thefft.*(thepsd./(thepsd+tune))
+def deblur_lr(wsp, volume):
+    """
+    Deconvolution implementation using Lucy-Richardson approach modified
+    to use Gaussian noise
 
-    # The ffts should be already correctly normalized (unity DC)
+    Dey, N. et al. 3D Microscopy Deconvolution using Richardson-Lucy Algorithm with 
+    Total Variation Regularization.” (2004).
+    """
+    # Step size for iteration
+    alpha = wsp.ifnone("lr_alpha", 1.0)
 
-    # normalise
-    #if sum(kernel)>0.01
-    #   kernel = kernel/(sum(kernel))
-    #else
-    #    warning('normalization of kernel skipped')
-    #end
+    # Regularization parameter (0=no regularization)
+    lam = wsp.ifnone("lr_lam", 0)
 
-    if len(kernel) < kernel_length:
-        # if the kernel is shorter than required pad in the middle by zeros
-        n = kernel_length-len(kernel)
-        i1 = int(len(kernel)/2)
-        kernel = np.concatenate((kernel[:i1], np.zeros(n), kernel[i1:]))
-    return kernel
-   
-def zdeblur_with_kern(volume, kernel, deblur_method="fft"):
+    # Shape PSF for broadcasting and create adjoint operator by reversing
+    psf = wsp.psf[np.newaxis, np.newaxis, ..., np.newaxis]
+    psf_hat = wsp.psf[::-1][np.newaxis, np.newaxis, ..., np.newaxis]
+
+    #data_deblurred, _remainder = signal.deconvolve(data_padded, psf)
+
+    # Main Lucy-Richardson algorithm
+    # Iterate towards maximum likelihood estimate for the deblurred image
+    deblurred = np.copy(volume)
+    for i in range(wsp.ifnone("lr_iterations", 100)):
+        h_est = convolve(deblurred, psf, 'same')
+        hhat_h_est = convolve(h_est, psf_hat, 'same')
+        hhat_img = convolve(volume, psf_hat, 'same') 
+        diff = hhat_img - hhat_h_est
+        deblurred = deblurred + alpha*diff
+
+        # Regularisation
+        if lam > 0:
+            grad = np.array(np.gradient(deblurred, axis=(0, 1, 2)))
+            mod_grad = np.sqrt(np.square(grad[0])+np.square(grad[1])+np.square(grad[2]))
+            mod_grad[mod_grad == 0] = 1
+            grad = grad / mod_grad
+            reg = np.ufunc.reduce(np.add, [np.gradient(grad[i], axis=i) for i in range(3)])
+            deblurred += lam*reg
+        
+        # Enforce positivity
+        deblurred = np.clip(deblurred, 0, None)
+
+    return deblurred
+
+def zdeblur_with_kern(wsp, volume):
     """
     Deblur an image
 
     :param volume: 4D Numpy array containing data to be deblurred
-    :param kernel: Numpy array containing deblurring kernel
-    :param deblur_method: Name of method to use with deblurring
     """
+    deblur_method = wsp.ifnone("deblur_method", "fft")
     if deblur_method == "fft":
-        # FIXME original MATLAB transposes and takes complex conjugate
-        # We don't need to transpose, so just take conjugate. However not
-        # completely clear if complex conjugate is required or if this is
-        # an unintentional side-effect of the transpose
-        fftkern = np.conj(fft(kernel))
-
-        # Demean volume along Z axis - kernel is zero mean
-        zmean = np.expand_dims(np.mean(volume, 2), 2)
-        volume = volume  - zmean
-
-        fftkern = np.squeeze(fftkern)
-        fftkern = fftkern[np.newaxis, np.newaxis, ..., np.newaxis]
-        fftkern2 = np.zeros(volume.shape, dtype=complex)
-        fftkern2[:, :, :, :] = fftkern
-        fftvol = fft(volume, axis=2)
-        volout = np.real(ifft(np.multiply(fftkern2, fftvol), axis=2))
-        volout += zmean
-        return volout
-
+        return deblur_fft(wsp, volume)
     elif deblur_method == "lucy":
-        #volout = filter_matrix(volume, kernel)
-        raise RuntimeError("Lucy-Richardson deconvolution not supported in this version of ASL_DEBLUR")
+        return deblur_lr(wsp, volume)
     else:
         raise RuntimeError("Unknown deblur method: %s" % deblur_method)
+
+# def deconvlucy_asl(data_vector, kernel, iterations, initial_estimate):
+#     # deconvlucy_asl is partially based on the deconvlucy function in Matlab.
+#     # NOTE = the matlab function implements this type of deconvolution using
+#     # the specific formula for Poisson noise.
+#     # deconvlucy_asl implements the deconvolution with the modified equation
+#     # that considers Gaussian noise.
+#     #
+#     # This function deconvolves image I using Lucy-Richardson algorithm, 
+#     # returning deblurred image J. The assumption is
+#     # that the image I was created by convolving a true image with a
+#     # point-spread function PSF and possibly by adding noise.
+#     # 
+#     # Based on Matlab function deconvlucy.m
+#     # 27-03-2013 IBG
+    
+#     # Parse inputs to verify valid function calling syntaxes and arguments
+#     J = data_vector
+#     PSF = kernel
+#     WEIGHT = np.ones(len(initial_estimate), dtype=np.float32)
+#     # WEIGHT[0] = 0.7
+#     WEIGHT[-1] = 1.3
+#     # WEIGHT(end-1)=1.05;
+#     # initial_estimate = J{1};
+#     DAMPAR = 0
+#     SUBSMPL = 1
+
+#     # 1. Prepare PSF --> Our estimated Kernel
+#     sizeOTF = len(initial_estimate)
+#     sizeOTF(numNSdim) = SUBSMPL*len(PSF)
+#     H = PSF
+#     ns = length(H)
+#     H = H./sum(H)
+
+#     # Matrix K
+#     matrix_kernel = np.zeros((ns, ns), dtype=np.float32)
+#     matrix_kernel[:,0] = H
+#     for i in range(1, ns):
+#         matrix_kernel[i:,i] = H[:(ns-i)]
+#     H = matrix_kernel
+
+#     # 2. Prepare parameters for iterations
+#     #
+#     # Create indexes for image according to the sampling rate
+#     idx = repmat({':'},[1 length(sizeI)]);
+#     for k = numNSdim, # index replicates for non-singleton PSF sizes only
+#         idx{k} = reshape(repmat(1:sizeI(k),[SUBSMPL 1]),[SUBSMPL*sizeI(k) 1]);
+#     end
+
+#     # J{2} = (abs(sqrt(initial_estimate)));
+#     wI = max(WEIGHT.*(READOUT + J{1}),0); # at this point  - positivity constraint
+#     J{2} = J{2}(idx{:});
+#     scale = 1;
+#     clear WEIGHT;
+#     DAMPAR22 = (DAMPAR.^2)/2;
+
+#     if SUBSMPL~=1,% prepare vector of dimensions to facilitate the reshaping
+#         % when the matrix is binned within the iterations.
+#         vec(2:2:2*length(sizeI)) = sizeI;
+#         vec(2*numNSdim-1) = -1;
+#         vec(vec==0) = [];
+#         num = fliplr(find(vec==-1));
+#         vec(num) = SUBSMPL;
+#     else
+#         vec = [];    
+#         num = [];
+            
+#     # 3. L_R Iterations
+#     lambda = 2*any(J{4}(:)~=0);
+#     for k =  (1:NUMIT)
+
+#         # 3.a Make an image predictions for the next iteration
+#         if k > 2,
+#             lambda = (J{4}(:,1).'*J{4}(:,2))/(J{4}(:,2).'*J{4}(:,2) + eps);
+#             lambda = max(min(lambda,1),0);% stability enforcement
+#         end
+#     #   Y = max(J{2} + lambda*(J{2} - J{3}),0);% plus positivity constraint
+#         Y = max(J{2},0);
+#         # 3.b  Make core for the LR estimation
+        
+#         CC = corelucy_asl(Y,H,DAMPAR22,wI,READOUT,SUBSMPL,idx,vec,num);
+        
+#         # 3.c Determine next iteration image & apply positivity constraint
+#         J{3} = J{2};
+        
+#         matrix_kernel_flip = (matrix_kernel(end:-1:1,end:-1:1));
+#         prodotto = (matrix_kernel_flip)*CC;
+#         J{2} = max(Y.*(prodotto)./scale,0); %
+#         clear CC;
+#         J{4} = [J{2}(:)-Y J{4}(:,1)];
+
+#     # 4. Convert the right array (for cell it is first array, for notcell it is
+#     # second array) to the original image class & output whole thing
+#     num = 1 + strcmp(classI{1},'notcell');
+#     if ~strcmp(classI{2},'double'),
+#         J{num} = changeclass(classI{2},J{num});
+
+#     if num==2,% the input & output is NOT a cell
+#         J = J{2}
+
+# def corelucy_asl(Y,H,DAMPAR22,wI,READOUT,SUBSMPL,idx,vec,num):
+
+#     Hflip = H[::-1,::-1] # PSFHAT
+#     ReBlurred1 = np.dot(H, Y) # PSF * IMG
+#     ReBlurred = np.dot(Hflip, ReBlurred1) # PSFHAT * EST
+
+#     # 2. An Estimate for the next step
+#     ReBlurred = ReBlurred + READOUT
+#     ReBlurred[ReBlurred == 0] = np.eps
+#     #AnEstim = wI / ReBlurred
+#     #  AnEstim = (wI - ReBlurred)
+
+#     # 3. Damping if needed
+#     if DAMPAR22 == 0: # No Damping
+#         ImRatio = AnEstim
+#     else:
+#         # Damping of the image relative to DAMPAR22 = (N*sigma)^2
+#         gm = 10
+#         g = (wI*np.log(AnEstim)+ ReBlurred - wI)/DAMPAR22
+#         g = np.min(g,1)
+#         G = (g^(gm-1))*(gm-(gm-1)*g)
+#         ImRatio = 1 + G*(AnEstim - 1)
+
+#     return ImRatio
 
 # FIXME this code is not complete because we get numerical problems and it is not
 # clear if the method is correctly implemented.
@@ -285,37 +426,39 @@ def zdeblur_with_kern(volume, kernel, deblur_method="fft"):
 #     # Output --> deblurred deltaM maps
 #     #
 #     # (c) Michael A. Chappell & Illaria Boscolo Galazzo, University of Oxford, 2012-2014
-#
+
 #     # MAC 4/4/14 removed the creation of the lorentz kernel and allow to accept
 #     # any kernel
 #     #
 #     nr, nc, ns, nt = data.shape
-#     # Matrix K 
-#     kernel_max = kernel/np.sum(kernel)
+
+#     # Matrix K - [NZ+PAD, NZ]
+#     # This seems to be set up to do convolution
+#     kernel_normed = kernel/np.sum(kernel)
 #     matrix_kernel = np.zeros((len(kernel), ns))
-#     matrix_kernel[:, 0] = kernel_max
+#     matrix_kernel[:, 0] = kernel_normed
 #     for i in range(1, ns):
-#         matrix_kernel[:, i] = np.concatenate([np.zeros(i), kernel_max[:ns-i]])
-#
+#         matrix_kernel[:, i] = np.concatenate([np.zeros(i), kernel_normed[:ns-i]])
+
 #     # Invert with SVD
 #     #U, S, V = svd(matrix_kernel)
 #     #W = np.diag(np.reciprocal(np.diag(S)))
 #     #W[S < (0.2*S[0])] = 0
 #     #inverse_matrix = V*W*U.'
 #     inverse_matrix = np.linalg.inv(matrix_kernel)
-#
+
 #     # Deblurring Algorithm
+#     # Loop over all Z stacks in the XY plane and over all volumes
+#     deblur_image = np.zeros(data.shape, dtype=np.float32)
 #     index = 1
 #     for i in range(1, nr+1):
 #         for j in range(1, nc+1):
 #             for k in range(1, nt+1):
 #                 index = index+1
-#                 #waitbar(index/(nt*nc*nc),h)
-#                 data_vettore = data[i, j, :, k]
-#                 initial_estimate = np.dot(inverse_matrix, data_vettore)
-#     #deblur = deconvlucy_asl(data_vettore,kernel,8,initial_estimate)
-#     #deblur_image[i,j,:,k] = deblur
-#     deblur_image = None
+#                 data_vector = data[i, j, :, k]
+#                 # Initial estimate is just a convolution with inverse convolution matrix?
+#                 initial_estimate = np.dot(inverse_matrix, data_vector)
+#                 deblur_image[i,j,:,k] = deconvlucy_asl(data_vector, kernel, 8, initial_estimate)
 #     return deblur_image 
 
 def get_residuals(wsp):
@@ -404,8 +547,15 @@ def data_unpad(padded_data, padding_slices=2):
     return padded_data[:, :, padding_slices:-padding_slices, :]
 
 def get_kernel(wsp):
+    data_padded = data_pad(wsp.asldata)
+    kernel_length = data_padded.shape[2]
+
     if wsp.kernel is not None:
         wsp.log.write(' - Kernel already supplied\n')
+        # Kernel is supplied as centered
+        kernel = np.squeeze(wsp.kernel)
+        half = int(len(kernel)/2)
+        wsp.kernel = np.concatenate((kernel[half:], kernel[:half]))
     else:
         # Number of slices that are non zero in mask
         get_mask(wsp)
@@ -413,16 +563,28 @@ def get_kernel(wsp):
         nslices = np.sum(maskser > 0)
         flatmask = flatten_mask(wsp.mask.data, nslices-2)
 
-        # Commented out in MATLAB code
-        # residser = zdeblur_make_series(resids,flatmask)
         get_residuals(wsp)
-        thespecd = zdeblur_make_spec(wsp.residuals.data, flatmask)
+        mean_fft_z = get_mean_fft_z(wsp.residuals.data, flatmask)
 
         # NB data has more slices than residuals
         wsp.log.write(' - Using kernel: %s\n' % wsp.deblur_kernel)
-        data_padded = data_pad(wsp.asldata)
-        sig = wsp.ifnone("sig", 1)
-        wsp.kernel = create_deblur_kern(wsp, thespecd, data_padded.shape[2], sig)
+        create_deblur_kern(wsp, mean_fft_z, kernel_length)
+
+    if len(wsp.kernel) < kernel_length:
+        # if the kernel is shorter than required pad in the middle by zeros
+        n = kernel_length-len(wsp.kernel)
+        half_len = int(len(wsp.kernel)/2)
+        wsp.kernel = np.concatenate((wsp.kernel[:half_len], np.zeros(n), wsp.kernel[half_len:]))
+   
+    half_len = int(len(wsp.kernel)/2)
+    wsp.kernel_centered = np.concatenate((wsp.kernel[half_len:], wsp.kernel[:half_len]))
+    #print("kernel (centered): ", wsp.kernel_centered)
+    wsp.psf = np.copy(wsp.kernel_centered)
+    if len(wsp.psf) % 2 == 0:
+        wsp.psf = wsp.psf[1:]
+    norm = sum(wsp.kernel_centered)
+    wsp.psf /= norm
+    #print("psf: ", wsp.psf)
 
 def deblur_img(wsp, img):
     """
@@ -434,7 +596,7 @@ def deblur_img(wsp, img):
     """
     wsp.log.write(' - Deblurring image %s\n' % img.name)
     data_padded = data_pad(img)
-    data_deblurred = zdeblur_with_kern(data_padded, wsp.kernel, wsp.deblur_method)
+    data_deblurred = zdeblur_with_kern(wsp, data_padded)
     data_out = data_unpad(data_deblurred)
     if img.data.ndim == 3:
         data_out = np.squeeze(data_out, axis=3)
