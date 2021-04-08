@@ -642,7 +642,10 @@ def main():
     """
     try:
         parser = AslOptionParser(usage="oxasl_deblur -i <ASL input file> [options...]", version=__version__)
-        parser.add_category(image.Options())
+        if hasattr(image, "Options"):
+            parser.add_category(image.Options())
+        else:
+            parser.add_category(image.AslImageOptions())
         parser.add_category(Options())
         parser.add_category(basil.BasilOptions())
         #parser.add_category(calib.CalibOptions())
