@@ -470,12 +470,12 @@ def get_residuals(wsp):
     else:
         wsp.log.write(' - Running BASIL to generate residuals\n')
         wsp.sub("basil")
-        wsp.basil_options = {
+        wsp.basil.basil_options = {
             "save-residuals" : True,
             "inferart" : False,
             "spatial" : False,
         }
-        basil.basil(wsp, output_wsp=wsp.basil)
+        basil.fit.run(wsp.basil)
         wsp.residuals = wsp.basil.finalstep.residuals
 
 def get_mask(wsp):
@@ -647,7 +647,7 @@ def main():
         else:
             parser.add_category(image.AslImageOptions())
         parser.add_category(Options())
-        parser.add_category(basil.BasilOptions())
+        parser.add_category(basil.Options())
         #parser.add_category(calib.CalibOptions())
         parser.add_category(GenericOptions())
 
