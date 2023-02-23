@@ -3,3 +3,4 @@ oxasl_deblur/_version.py
 dist
 *.egg-info
 doc/html
+__pycache__
