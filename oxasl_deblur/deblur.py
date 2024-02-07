@@ -469,13 +469,13 @@ def get_residuals(wsp):
         wsp.log.write(' - Residuals already supplied\n')
     else:
         wsp.log.write(' - Running BASIL to generate residuals\n')
-        wsp.sub("basil")
-        wsp.basil.basil_options = {
+        wsp.quantify_wsps = []
+        wsp.basil_options = {
             "save-residuals" : True,
             "inferart" : False,
             "spatial" : False,
         }
-        basil.fit.run(wsp.basil)
+        basil.run(wsp)
         wsp.residuals = wsp.basil.finalstep.residuals
 
 def get_mask(wsp):
