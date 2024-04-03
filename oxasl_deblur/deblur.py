@@ -17,7 +17,7 @@ deblur methods are:
   fft - do division in FFT domain
   lucy - Lucy-Richardson (ML solution) for Gaussian noise
 
-(c) Michael A. Chappell, University of Oxford, 2009-2018
+Copyright (c) 2008 University of Nottingham
 """
 
 from __future__ import print_function
@@ -466,8 +466,6 @@ def zdeblur_with_kern(wsp, volume):
 #     # deblurring algorithm
 #     # Input --> original deltaM maps kernel
 #     # Output --> deblurred deltaM maps
-#     #
-#     # (c) Michael A. Chappell & Illaria Boscolo Galazzo, University of Oxford, 2012-2014
 
 #     # MAC 4/4/14 removed the creation of the lorentz kernel and allow to accept
 #     # any kernel

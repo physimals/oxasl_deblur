@@ -1,7 +1,7 @@
 """
 OXASL DEBLUR
 
-Copyright (c) University of Oxford 2018
+Copyright (c) 2018 University of Nottingham
 """
 from .deblur import Options, run
 from ._version import __version__, __timestamp__
