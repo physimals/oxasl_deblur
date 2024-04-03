@@ -20,7 +20,7 @@ templates_path = ['_templates']
 source_suffix = '.rst'
 master_doc = 'index'
 project = u'oxasl_deblur'
-copyright = u'2019, University of Oxford'
+copyright = u'2019, University of Nottingham'
 author = u'Martin Craig'
 build_dir = u"_build"
 
